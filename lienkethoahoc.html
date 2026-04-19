@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<title>Mô phỏng Lắp Ráp Phân Tử – Smooth PRO</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --bg:#eef2f7; --panel:#2ecc71; --card:#f7f7f7; --text:#2c3e50;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+
+  header{
+    display:flex;gap:10px;align-items:center;justify-content:center;
+    padding:10px;background:var(--panel);position:sticky;top:0;z-index:2
+  }
+  .tool{
+    width:42px;height:42px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-weight:700;cursor:grab;user-select:none;
+    box-shadow:0 2px 6px rgba(0,0,0,.15)
+  }
+  .H{background:#8e8e8e}
+  .O{background:#e74c3c}
+  .C{background:#222}
+  .N{background:#3498db}
+  .Cl{background:#2ecc71}
+  .Na{background:#9b59b6}
+  button{padding:8px 12px;border:none;border-radius:8px;cursor:pointer}
+
+  #canvas{
+    position:relative;height:460px;margin:10px;
+    background:#fff;border:2px dashed #d0d7de;border-radius:10px;
+    overflow:hidden;
+  }
+  canvas{position:absolute;inset:0;pointer-events:none}
+
+  .atom{
+    width:40px;height:40px;border-radius:50%;
+    position:absolute;color:#fff;display:flex;align-items:center;justify-content:center;
+    font-weight:700;cursor:grab;user-select:none;
+    box-shadow:0 6px 12px rgba(0,0,0,.18);
+    transform:translateZ(0); /* kích hoạt GPU */
+  }
+
+  #cards{display:flex;flex-wrap:wrap;gap:10px;padding:10px}
+  .card{
+    width:240px;background:var(--card);border-left:6px solid #2ecc71;
+    border-radius:10px;padding:10px;box-shadow:0 3px 8px rgba(0,0,0,.08)
+  }
+  .formula{font-size:22px;margin:4px 0}
+  small{color:#555}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="tool H" draggable="true" data-type="H">H</div>
+  <div class="tool O" draggable="true" data-type="O">O</div>
+  <div class="tool C" draggable="true" data-type="C">C</div>
+  <div class="tool N" draggable="true" data-type="N">N</div>
+  <div class="tool Cl" draggable="true" data-type="Cl">Cl</div>
+  <div class="tool Na" draggable="true" data-type="Na">Na</div>
+  <button onclick="resetAll()">Reset</button>
+</header>
+
+<div id="canvas">
+  <canvas id="lines"></canvas>
+</div>
+
+<div id="cards"></div>
+
+<script>
+/* ================= CORE STATE ================= */
+const canvasEl = document.getElementById('canvas');
+const lineCanvas = document.getElementById('lines');
+const ctx = lineCanvas.getContext('2d');
+
+let atoms = []; // {el, x, y, vx, vy, type, color}
+let needsDraw = true; // dirty flag
+
+/* ================= CANVAS (DPR AWARE) ================= */
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvasEl.getBoundingClientRect();
+  lineCanvas.width  = rect.width  * dpr;
+  lineCanvas.height = rect.height * dpr;
+  lineCanvas.style.width  = rect.width + 'px';
+  lineCanvas.style.height = rect.height + 'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  needsDraw = true;
+}
+resize();
+window.addEventListener('resize', resize);
+
+/* ================= TOOL DRAG -> CANVAS ================= */
+document.querySelectorAll('.tool').forEach(tool=>{
+  tool.addEventListener('dragstart', e=>{
+    e.dataTransfer.setData('type', tool.dataset.type);
+  });
+});
+canvasEl.addEventListener('dragover', e=>e.preventDefault());
+canvasEl.addEventListener('drop', e=>{
+  e.preventDefault();
+  const t = e.dataTransfer.getData('type');
+  const rect = canvasEl.getBoundingClientRect();
+  createAtom(t, e.clientX - rect.left, e.clientY - rect.top);
+});
+
+/* ================= CREATE / DRAG ================= */
+function colorOf(type){
+  return getComputedStyle(document.querySelector('.'+CSS.escape(type))).backgroundColor;
+}
+function createAtom(type, x, y){
+  const el = document.createElement('div');
+  el.className = 'atom ' + type;
+  el.textContent = type;
+  canvasEl.appendChild(el);
+
+  const a = {
+    el, type,
+    x: x - 20, y: y - 20,
+    vx: 0, vy: 0,
+    color: colorOf(type)
+  };
+  el.style.left = a.x + 'px';
+  el.style.top  = a.y + 'px';
+
+  makeDraggable(a);
+  atoms.push(a);
+  needsDraw = true;
+}
+
+function makeDraggable(a){
+  let ox=0, oy=0, dragging=false;
+
+  a.el.onmousedown = (e)=>{
+    dragging = true;
+    ox = e.offsetX; oy = e.offsetY;
+    a.el.style.cursor = 'grabbing';
+
+    const move = (e)=>{
+      if(!dragging) return;
+      const rect = canvasEl.getBoundingClientRect();
+      a.x = e.clientX - rect.left - ox;
+      a.y = e.clientY - rect.top  - oy;
+      a.vx = a.vy = 0;
+      a.el.style.left = a.x + 'px';
+      a.el.style.top  = a.y + 'px';
+      needsDraw = true;
+    };
+    const up = ()=>{
+      dragging = false;
+      a.el.style.cursor = 'grab';
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+
+  // xóa
+  a.el.ondblclick = ()=>{
+    a.el.remove();
+    atoms = atoms.filter(x=>x!==a);
+    needsDraw = true;
+  };
+}
+
+/* ================= SPATIAL HASH (GRID) ================= */
+const CELL = 120; // >= threshold
+function buildGrid(){
+  const grid = new Map();
+  const key = (cx,cy)=> cx+','+cy;
+  atoms.forEach((a,i)=>{
+    const cx = Math.floor((a.x+20)/CELL);
+    const cy = Math.floor((a.y+20)/CELL);
+    const k = key(cx,cy);
+    if(!grid.has(k)) grid.set(k, []);
+    grid.get(k).push(i);
+  });
+  return grid;
+}
+function neighbors(grid, a){
+  const res = [];
+  const cx = Math.floor((a.x+20)/CELL);
+  const cy = Math.floor((a.y+20)/CELL);
+  for(let dx=-1;dx<=1;dx++){
+    for(let dy=-1;dy<=1;dy++){
+      const k = (cx+dx)+','+(cy+dy);
+      if(grid.has(k)) res.push(...grid.get(k));
+    }
+  }
+  return res;
+}
+
+/* ================= PHYSICS: SNAP (SPRING) ================= */
+const THRESH = 100;
+const SNAP_DIST = 80;   // vùng “hút”
+const K = 0.02;         // độ cứng lò xo
+const DAMP = 0.85;      // giảm chấn
+
+function physicsStep(){
+  const grid = buildGrid();
+
+  atoms.forEach((a,i)=>{
+    const neighIdx = neighbors(grid, a);
+    neighIdx.forEach(j=>{
+      if(j<=i) return;
+      const b = atoms[j];
+
+      const ax = a.x+20, ay = a.y+20;
+      const bx = b.x+20, by = b.y+20;
+
+      const dx = bx-ax, dy = by-ay;
+      const d = Math.hypot(dx,dy);
+
+      if(d < SNAP_DIST && d > 0.001){
+        // spring về khoảng SNAP_DIST (hút nhẹ)
+        const target = SNAP_DIST;
+        const f = K * (d - target);
+        const nx = dx/d, ny = dy/d;
+
+        a.vx += f*nx; a.vy += f*ny;
+        b.vx -= f*nx; b.vy -= f*ny;
+      }
+    });
+  });
+
+  // integrate
+  atoms.forEach(a=>{
+    a.vx *= DAMP; a.vy *= DAMP;
+    a.x += a.vx;  a.y += a.vy;
+    a.el.style.left = a.x + 'px';
+    a.el.style.top  = a.y + 'px';
+  });
+}
+
+/* ================= CLUSTERS (DFS) ================= */
+function getClusters(){
+  const grid = buildGrid();
+  const visited = new Set();
+  const clusters = [];
+
+  for(let i=0;i<atoms.length;i++){
+    if(visited.has(i)) continue;
+    const stack=[i];
+    const group=[];
+    while(stack.length){
+      const idx = stack.pop();
+      if(visited.has(idx)) continue;
+      visited.add(idx);
+      group.push(idx);
+
+      const a = atoms[idx];
+      const neighIdx = neighbors(grid, a);
+      neighIdx.forEach(j=>{
+        if(visited.has(j)) return;
+        const b = atoms[j];
+        const dx = (a.x+20)-(b.x+20);
+        const dy = (a.y+20)-(b.y+20);
+        if(Math.hypot(dx,dy) < THRESH){
+          stack.push(j);
+        }
+      });
+    }
+    clusters.push(group);
+  }
+  return clusters;
+}
+
+/* ================= DRAW ================= */
+function draw(){
+  if(!needsDraw) return;
+  needsDraw = false;
+
+  ctx.clearRect(0,0,lineCanvas.width,lineCanvas.height);
+
+  const grid = buildGrid();
+
+  // draw lines
+  atoms.forEach((a,i)=>{
+    const neighIdx = neighbors(grid, a);
+    neighIdx.forEach(j=>{
+      if(j<=i) return;
+      const b = atoms[j];
+
+      const ax = a.x+20, ay = a.y+20;
+      const bx = b.x+20, by = b.y+20;
+
+      const d = Math.hypot(ax-bx, ay-by);
+      if(d < THRESH){
+        const t = 1 - (d/THRESH); // gần thì đậm
+        ctx.lineWidth = 1 + 3*t;
+
+        // glow
+        ctx.shadowBlur = 8 + 10*t;
+        ctx.shadowColor = 'rgba(0,0,0,0.25)';
+
+        ctx.strokeStyle = 'rgba(50,50,50,'+(0.4+0.6*t)+')';
+        ctx.beginPath();
+        ctx.moveTo(ax,ay);
+        ctx.lineTo(bx,by);
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+      }
+    });
+  });
+
+  // highlight clusters (viền mờ)
+  const clusters = getClusters();
+  clusters.forEach((g,idx)=>{
+    if(g.length<2) return;
+    const hue = (idx*67)%360;
+    ctx.strokeStyle = `hsla(${hue},70%,50%,0.25)`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,6]);
+
+    // vẽ hull đơn giản (bao chữ nhật)
+    let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    g.forEach(i=>{
+      const a = atoms[i];
+      minX = Math.min(minX, a.x);
+      minY = Math.min(minY, a.y);
+      maxX = Math.max(maxX, a.x+40);
+      maxY = Math.max(maxY, a.y+40);
+    });
+    ctx.strokeRect(minX-6, minY-6, (maxX-minX)+12, (maxY-minY)+12);
+    ctx.setLineDash([]);
+  });
+
+  // update cards (rẻ, số phần tử ít)
+  renderCards(clusters);
+}
+
+/* ================= DATABASE + ANALYZE ================= */
+const db = [
+  {name:"Oxygen",formula:"O2",type:"Đơn chất",comp:{O:2},desc:"Khí cần cho hô hấp",use:"Y tế"},
+  {name:"Hydrogen",formula:"H2",type:"Đơn chất",comp:{H:2},desc:"Khí nhẹ",use:"Nhiên liệu"},
+  {name:"Nitrogen",formula:"N2",type:"Đơn chất",comp:{N:2},desc:"78% không khí",use:"Bảo quản"},
+
+  {name:"Nước",formula:"H2O",type:"Hợp chất",comp:{H:2,O:1},desc:"Thiết yếu",use:"Sinh hoạt"},
+  {name:"CO2",formula:"CO2",type:"Hợp chất",comp:{C:1,O:2},desc:"Khí thải",use:"Nước có gas"},
+  {name:"Methane",formula:"CH4",type:"Hợp chất",comp:{C:1,H:4},desc:"Khí cháy",use:"Gas"},
+  {name:"Ammonia",formula:"NH3",type:"Hợp chất",comp:{N:1,H:3},desc:"Mùi khai",use:"Phân bón"},
+  {name:"NO2",formula:"NO2",type:"Hợp chất",comp:{N:1,O:2},desc:"Khí độc",use:"Ô nhiễm"},
+  {name:"N2O",formula:"N2O",type:"Hợp chất",comp:{N:2,O:1},desc:"Khí cười",use:"Y học"},
+  {name:"C2O (ít gặp)",formula:"C2O",type:"Hợp chất",comp:{C:2,O:1},desc:"Hiếm",use:"Nghiên cứu"}
+];
+
+function compare(a,b){
+  const keys = new Set([...Object.keys(a),...Object.keys(b)]);
+  for(const k of keys){
+    if((a[k]||0)!==(b[k]||0)) return false;
+  }
+  return true;
+}
+function countOf(groupIdx){
+  const count={};
+  groupIdx.forEach(i=>{
+    const t = atoms[i].type;
+    count[t] = (count[t]||0)+1;
+  });
+  return count;
+}
+function renderCards(clusters){
+  const wrap = document.getElementById('cards');
+  wrap.innerHTML = '';
+
+  clusters.forEach(g=>{
+    if(g.length===1){
+      addCard(wrap,"Nguyên tử riêng","-","-","","");
+      return;
+    }
+    const count = countOf(g);
+
+    for(const d of db){
+      if(compare(count, d.comp)){
+        addCard(wrap,d.name,d.formula,d.type,d.desc,d.use);
+        return;
+      }
+    }
+    const types = Object.keys(count).length;
+    addCard(wrap,"Chưa xác định","-", types===1?"Đơn chất":"Hợp chất","","");
+  });
+}
+
+function addCard(container,name,f,t,desc,use){
+  const c = document.createElement('div');
+  c.className='card';
+  c.innerHTML = `
+    <b>${name}</b>
+    <div class="formula">${format(f)}</div>
+    <i>${t}</i><br>
+    <small>${desc||''}</small><br>
+    <small>${use?('👉 '+use):''}</small>
+  `;
+  container.appendChild(c);
+}
+function format(f){ return (f||'').replace(/\d/g, d=>`<sub>${d}</sub>`); }
+
+/* ================= LOOP ================= */
+function loop(){
+  physicsStep();
+  needsDraw = true;
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ================= RESET ================= */
+function resetAll(){
+  atoms.forEach(a=>a.el.remove());
+  atoms = [];
+  needsDraw = true;
+}
+</script>
+
+</body>
+</html>
